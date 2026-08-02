@@ -1,0 +1,24 @@
+[project]
+name = "vaultnote"
+version = "1.0.0"
+description = "End-to-End Encrypted Multi-Tenant Collaborative Workspace Platform"
+requires-python = ">=3.12"
+readme = "README.md"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 90
+target-version = "py312"

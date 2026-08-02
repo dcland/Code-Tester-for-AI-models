@@ -1,0 +1,23 @@
+# Optional: run VaultNote + Redis. The app also runs fine WITHOUT Redis
+# (it uses a pure-Python in-memory rate limiter fallback).
+services:
+  api:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      VAULTNOTE_ENVIRONMENT: production
+      VAULTNOTE_DATABASE_URL: sqlite+aiosqlite:///./var/vaultnote.db
+      VAULTNOTE_REDIS_URL: redis://redis:6379/0
+      # Provide real secrets via an env file or your secret manager:
+      VAULTNOTE_JWT_SECRET: ${VAULTNOTE_JWT_SECRET}
+      VAULTNOTE_PASSWORD_PEPPER: ${VAULTNOTE_PASSWORD_PEPPER}
+      VAULTNOTE_MASTER_KEK: ${VAULTNOTE_MASTER_KEK}
+      VAULTNOTE_ANALYTICS_PSEUDONYM_SALT: ${VAULTNOTE_ANALYTICS_PSEUDONYM_SALT}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"

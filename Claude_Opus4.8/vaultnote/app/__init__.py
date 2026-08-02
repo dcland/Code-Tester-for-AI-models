@@ -1,0 +1,3 @@
+"""VaultNote — End-to-End Encrypted Multi-Tenant Collaborative Workspace Platform."""
+
+__version__ = "1.0.0"
