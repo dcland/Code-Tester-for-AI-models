@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="480" viewBox="0 0 720 480" role="img" aria-labelledby="title desc">
+  <title id="title">VaultNote benchmark radar chart</title>
+  <desc id="desc">Normalized AICGB dimension scores for Claude Opus 4.8 and Kimi3.</desc>
+  <rect width="720" height="480" fill="#0f172a" rx="12"/>
+  <g transform="translate(35,20)" font-family="system-ui, sans-serif">
+    <text x="0" y="20" fill="#f8fafc" font-size="20" font-weight="700">VaultNote AICGB profile</text>
+    <text x="0" y="42" fill="#94a3b8" font-size="12">Dimension scores normalized to 100</text>
+
+    <g fill="none" stroke="#334155" stroke-width="1">
+      <polygon points="185,162.5 217.5,181.25 217.5,218.75 185,237.5 152.5,218.75 152.5,181.25"/>
+      <polygon points="185,125 250,162.5 250,237.5 185,275 120,237.5 120,162.5"/>
+      <polygon points="185,87.5 282.5,143.75 282.5,256.25 185,312.5 87.5,256.25 87.5,143.75"/>
+      <polygon points="185,50 314.9,125 314.9,275 185,350 55.1,275 55.1,125"/>
+      <line x1="185" y1="200" x2="185" y2="50"/><line x1="185" y1="200" x2="314.9" y2="125"/>
+      <line x1="185" y1="200" x2="314.9" y2="275"/><line x1="185" y1="200" x2="185" y2="350"/>
+      <line x1="185" y1="200" x2="55.1" y2="275"/><line x1="185" y1="200" x2="55.1" y2="125"/>
+    </g>
+
+    <polygon points="185,68 297.6,135 295.4,263.75 185,330 81.1,260 81.1,140"
+             fill="#38bdf8" fill-opacity="0.24" stroke="#38bdf8" stroke-width="3"/>
+    <polygon points="185,116 262.9,155 224,222.5 185,270 124.3,235 133,170"
+             fill="#fb7185" fill-opacity="0.20" stroke="#fb7185" stroke-width="3"/>
+
+    <g fill="#cbd5e1" font-size="12" text-anchor="middle">
+      <text x="185" y="35">Correctness</text><text x="337" y="121">Performance</text>
+      <text x="344" y="284">Security</text><text x="185" y="372">Privacy</text>
+      <text x="26" y="284">Compliance</text><text x="26" y="121">Quality</text>
+    </g>
+
+    <g transform="translate(400,100)" font-size="14">
+      <rect width="16" height="16" fill="#38bdf8"/><text x="26" y="13" fill="#e2e8f0">Claude Opus 4.8 — 85/100</text>
+      <rect y="34" width="16" height="16" fill="#fb7185"/><text x="26" y="47" fill="#e2e8f0">Kimi3 — 47/100 raw</text>
+      <text y="83" fill="#fda4af" font-size="12">Kimi3 final: 17/100 after critical</text>
+      <text y="100" fill="#fda4af" font-size="12">authorization-bypass penalty (−30)</text>
+    </g>
+  </g>
+</svg>
