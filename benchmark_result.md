@@ -1,5 +1,7 @@
 # VaultNote comparative benchmark result
 
+> **Historical result:** Kimi3 has since been substantially revised. See the current [Kimi3 retest](benchmark_retest_result.md), which scores the revised code **84/100 with no critical penalty**.
+
 Date: 2026-08-03  
 Compared submissions: `Claude_Opus4.8/vaultnote` and `Kimi3/vaultnote`  
 Shared implementation prompt: `software_creation_prompt.md`  
@@ -16,9 +18,9 @@ Scoring rubric: `test_prompt.md` (AICGB v2.0 dimensions)
 
 Kimi3 receives the AICGB critical-vulnerability penalty because ordinary tenant members/viewers can reach write/share operations without resource-level permission checks, and the code explicitly permits creating a share grant for a user from another tenant. This is a broken-access-control / authorization-bypass class defect.
 
-![Normalized AICGB radar chart](benchmark_radar.svg)
+![Current normalized AICGB radar chart](benchmark_radar.svg)
 
-The radar chart shows the as-delivered scores. The counterfactual values are tabulated below so the operational assumption does not overwrite the original measured result.
+The radar chart has been updated to show the current retest. The historical as-delivered and counterfactual values remain tabulated below.
 
 ## Counterfactual result: assume Kimi3 ran correctly on the first attempt
 
@@ -35,6 +37,50 @@ This counterfactual makes the most generous interpretation of the assumption: Ki
 | **Raw total** | **100** | **85** | **47** | **52** | **+5** |
 | AICGB critical authorization penalty | — | 0 | −30 | **−30** | 0 |
 | **Final score** | **100** | **85** | **17** | **22** | **+5** |
+
+### Exact Kimi3 deduction ledger under this assumption
+
+This ledger begins at 100. Ordinary dimension deductions total 48, producing the raw score of 52. AICGB's separate critical-vulnerability rule then subtracts 30. The same implementation flaw can affect more than one dimension because AICGB independently scores correctness, security, privacy, and compliance.
+
+| Dimension | Deduction | Exact reason | Primary source evidence |
+|---|---:|---|---|
+| Correctness | −2 | Password-reset confirmation always reports success but never validates the token or changes a password; requested tokens are not persisted | `app/api/v1/auth.py:53`, `app/services/auth_service.py:146` |
+| Correctness | −2 | Note/folder/share/collaboration routes rely on membership alone instead of enforcing resource permission and role ceilings | `app/api/v1/notes.py:29`, `app/api/v1/notes.py:63`, `app/api/v1/notes.py:110` |
+| Correctness | −2 | Tenant-key rotation rewraps note/folder DEKs but omits file DEKs, so existing encrypted files become unreadable after the organization key changes | `app/services/note_service.py:129` |
+| Correctness | −1 | No file-delete endpoint; upload does not compare the declared content type with detected magic bytes | `app/api/v1/files.py:17`, complete router ends without `DELETE` |
+| Correctness | −1 | Retention/export requirements are incomplete: plan is not applied to purge queries and ZIP export contains JSON but no encrypted files | `app/services/compliance_service.py:111`, `app/services/compliance_service.py:130` |
+| **Correctness subtotal** | **−8** | **25 − 8 = 17** | |
+| Performance | −2 | Shared decrypted-note LRU mutates `OrderedDict` state without a thread lock | `app/utils/cache.py:20` |
+| Performance | −2 | Async file operations perform blocking `open`, `write`, and `read_bytes`; uploads are fully buffered in memory | `app/services/file_service.py:93`, `app/services/file_service.py:150`, `app/api/v1/files.py:23` |
+| Performance | −1 | Measured 10 MB round trip was 31.14 ms median / 34.24 ms worst versus Claude's 5.72 / 7.16 ms | Reproducible checks in this report |
+| Performance | −1 | No evidence for the required 200-client, <80 ms p95 endpoint target | Tests contain no standardized 200-client load run |
+| **Performance subtotal** | **−6** | **15 − 6 = 9** | |
+| Security | −5 | Broken resource authorization: callers with any membership can reach write/share operations; the grantee's tenant membership is not checked | `app/api/dependencies.py:52`, `app/api/v1/notes.py:110` |
+| Security | −3 | Raw reset token is returned to an unauthenticated requester and differs for existing/non-existing accounts; confirm route is a no-op | `app/api/v1/auth.py:53` |
+| Security | −2 | Production does not fail closed when JWT, pepper, or encryption secrets are missing; random per-process defaults are silently generated | `app/core/config.py:32` |
+| Security | −2 | Declared MIME is ignored and the virus-scan stub accepts every payload | `app/api/v1/files.py:17`, `app/services/file_service.py:49` |
+| Security | −1 | Audit integrity uses an unkeyed, mutable in-memory hash chain rather than durable signed/tamper-resistant storage | `app/core/compliance.py:62`, `app/core/compliance.py:78` |
+| Security | −1 | Workspace/resource binding is incomplete; presence access uses `note_id` without tenant context | `app/api/v1/notes.py:171` |
+| **Security subtotal** | **−14** | **20 − 14 = 6** | |
+| Privacy | −3 | GDPR erasure removes `FileAsset` rows but leaves encrypted blobs on disk | `app/services/compliance_service.py:55` |
+| Privacy | −2 | Seed script prints emails and a shared plaintext password | `scripts/seed_demo.py:69` |
+| Privacy | −1 | Reset response exposes account existence and a raw secret token | `app/api/v1/auth.py:53` |
+| Privacy | −1 | Pseudonyms use plain SHA-256 with a slice of the JWT secret instead of a dedicated keyed HMAC salt | `app/core/privacy.py:53` |
+| Privacy | −1 | Supplied runtime database contains `demo@example.com` and the folder includes 19 stored encrypted blobs | `vaultnote.db`, `storage/files/` |
+| **Privacy subtotal** | **−8** | **15 − 8 = 7** | |
+| Compliance | −3 | Art. 17 erasure is incomplete because physical file blobs are retained | `app/services/compliance_service.py:55` |
+| Compliance | −2 | Free/paid purge loop never filters by plan or tenant; the free cutoff can therefore apply globally | `app/services/compliance_service.py:130` |
+| Compliance | −1 | Claimed JSON+ZIP file export writes only `user_data.json` | `app/services/compliance_service.py:111` |
+| Compliance | −1 | Audit trail is volatile in-memory state and disappears on restart | `app/core/compliance.py:78` |
+| Compliance | −1 | Retention is manually triggered rather than automatic, and audit entries are hash-chained rather than cryptographically signed | `app/api/v1/admin.py:86`, `app/core/compliance.py:62` |
+| **Compliance subtotal** | **−8** | **15 − 8 = 7** | |
+| Quality | −2 | Ruff reports 87 findings after excluding the noisy FastAPI `B008` category | Reproducible checks in this report |
+| Quality | −1 | Tests accept cross-tenant sharing and do not exercise a real password-reset confirmation, allowing major defects to pass | `tests/test_notes_tenancy.py:124`, `tests/test_auth.py:121` |
+| Quality | −1 | Mutable globals, blocking I/O, odd/dead seed code, DB/cache/blob artifacts reduce robustness and submission hygiene | `app/core/compliance.py:85`, `scripts/seed_demo.py:46`, supplied artifacts |
+| **Quality subtotal** | **−4** | **10 − 4 = 6** | |
+| **Ordinary deductions** | **−48** | **100 − 48 = 52 raw** | |
+| **Critical vulnerability** | **−30** | **Authorization bypass: cross-tenant sharing is accepted and tested as success** | `app/api/v1/notes.py:110`, `tests/test_notes_tenancy.py:124` |
+| **Final counterfactual score** | **−78** | **100 − 48 − 30 = 22** | |
 
 Why only five points change:
 
@@ -240,7 +286,7 @@ Strengths:
 - Starts cleanly and passes all 67 supplied tests without source changes.
 - Centralized tenant/resource authorization checks; tests cover viewer restrictions, unshared-member denial, cross-tenant file denial, and invalid cross-tenant sharing.
 - Complete password-reset lifecycle with hashed, expiring reset tokens and session revocation.
-- AES-256-GCM envelope encryption uses per-object DEKs, tenant master keys, AAD binding, and working key rotation.
+- AES-256-GCM envelope encryption uses per-object DEKs, tenant master keys, and AAD binding. Its core key-rotation primitive is tested, but full application-level rotation across notes, folders, and files is not exposed.
 - File deletion and GDPR erasure remove encrypted blobs from disk, not only database rows.
 - Persistent, pseudonymized audit records; HMAC-based pseudonyms; PII/token redaction; differential privacy; consent and export flows.
 - Thread-safe bounded TTL LRU cache and broad tests covering security, privacy, tenancy, sharing, compliance, and performance.
@@ -249,6 +295,7 @@ Remaining issues:
 
 - Retention purge is an admin-triggered endpoint, not an automatically scheduled job as requested.
 - Folder sharing is represented in the authorization model but no folder-sharing endpoint is exposed.
+- Full tenant-key rotation is only a core primitive; there is no service/endpoint that gathers and rewraps every note, folder, and file DEK.
 - Audit chaining is unkeyed SHA-256, so it is tamper-evident only when an attacker cannot rewrite the whole chain; it is not a cryptographic signature.
 - The retention endpoint processes every organization, so a tenant admin can trigger a global maintenance purge rather than a tenant-scoped purge.
 - The included endpoint performance test uses a 250 ms CI ceiling rather than the prompt's strict 80 ms p95 threshold; no standardized 200-client result is provided.
