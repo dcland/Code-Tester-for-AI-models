@@ -3,18 +3,13 @@ Repository layer - data access with parameterized queries (SQL-injection safe).
 """
 from __future__ import annotations
 
-from typing import Generic, TypeVar
-from uuid import uuid4
-
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import Base
 
-ModelT = TypeVar("ModelT", bound=Base)
 
-
-class BaseRepository(Generic[ModelT]):
+class BaseRepository[ModelT: Base]:
     """Generic repository with tenant scoping."""
 
     model: type[ModelT]

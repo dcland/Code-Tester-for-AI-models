@@ -3,11 +3,17 @@ Note and folder service - envelope encryption, CRUD, caching, key rotation.
 """
 from __future__ import annotations
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.encryption import WrappedKey, encryption_service
-from app.models.entities import Folder, Note, Organization
-from app.repositories.repositories import FolderRepository, NoteRepository, OrganizationRepository
+from app.models.entities import FileAsset, Folder, Note, Permission
+from app.repositories.repositories import (
+    FolderRepository,
+    NoteRepository,
+    OrganizationRepository,
+)
+from app.services.access_service import PERM_LEVELS, AccessService
 from app.utils.cache import note_cache
 from app.utils.exceptions import NotFoundError
 
@@ -18,6 +24,7 @@ class NoteService:
         self.notes = NoteRepository(session)
         self.folders = FolderRepository(session)
         self.orgs = OrganizationRepository(session)
+        self.access = AccessService(session)
 
     async def _tenant_kek(self, org_id: str) -> bytes:
         org = await self.orgs.get_by_id(org_id)
@@ -46,7 +53,8 @@ class NoteService:
         return note
 
     async def get_note(self, org_id: str, note_id: str) -> dict:
-        # Cache lookup is O(1)
+        # Cache lookup is O(1). The cache key embeds the tenant so a cached
+        # payload can never leak across tenants.
         cache_key = f"note:{note_id}:{org_id}"
         cached = note_cache.get(cache_key)
         if cached is not None:
@@ -84,11 +92,21 @@ class NoteService:
         note_cache.invalidate(f"note:{note_id}:{org_id}")
         return {"id": note.id, "version": note.version}
 
-    async def list_notes(self, org_id: str, workspace_id: str) -> list[dict]:
+    async def list_accessible_notes(self, org_id: str, workspace_id: str, user_id: str) -> list[dict]:
+        """List notes in a workspace the caller may actually read.
+
+        Notes are private by default: creators and org owner/admins see
+        everything; members/viewers see only notes shared with them.
+        """
         notes = await self.notes.list_active_by_workspace(workspace_id)
         kek = await self._tenant_kek(org_id)
         out: list[dict] = []
         for n in notes:
+            if n.organization_id != org_id:
+                continue  # defense in depth on top of workspace binding
+            level = await self.access.note_level(org_id, user_id, n)
+            if level < PERM_LEVELS[Permission.READ]:
+                continue
             dek = encryption_service.unwrap_dek(WrappedKey(n.dek_ciphertext, n.dek_nonce), kek)
             title = encryption_service.decrypt(n.title_encrypted, n.title_nonce, dek).decode()
             out.append({"id": n.id, "title": title, "folder_id": n.folder_id, "version": n.version})
@@ -127,7 +145,11 @@ class NoteService:
 
     # ---- Key rotation -----------------------------------------------------
     async def rotate_tenant_key(self, org_id: str) -> int:
-        """Rotate tenant KEK and re-wrap all DEKs. Returns count of re-wrapped items."""
+        """Rotate tenant KEK and re-wrap ALL DEKs (notes, folders, files).
+
+        Every object class whose DEK is wrapped with the tenant KEK must be
+        re-wrapped, otherwise those objects become unreadable after rotation.
+        """
         org = await self.orgs.get_by_id(org_id)
         if org is None:
             raise NotFoundError("Organization not found")
@@ -135,8 +157,6 @@ class NoteService:
         new_kek = encryption_service.generate_tenant_kek()
 
         count = 0
-        # Re-wrap notes
-        notes = await self.notes.list_active_by_workspace_all_org(org_id) if hasattr(self.notes, 'list_active_by_workspace_all_org') else []
         for n in await self._all_notes_for_org(org_id):
             wrapped = encryption_service.rotate_dek(WrappedKey(n.dek_ciphertext, n.dek_nonce), old_kek, new_kek)
             n.dek_ciphertext, n.dek_nonce = wrapped.ciphertext, wrapped.nonce
@@ -144,6 +164,11 @@ class NoteService:
         for f in await self._all_folders_for_org(org_id):
             wrapped = encryption_service.rotate_dek(WrappedKey(f.dek_ciphertext, f.dek_nonce), old_kek, new_kek)
             f.dek_ciphertext, f.dek_nonce = wrapped.ciphertext, wrapped.nonce
+            count += 1
+        # File DEKs were previously skipped, bricking encrypted files on rotation.
+        for asset in await self._all_files_for_org(org_id):
+            wrapped = encryption_service.rotate_dek(WrappedKey(asset.dek_ciphertext, asset.dek_nonce), old_kek, new_kek)
+            asset.dek_ciphertext, asset.dek_nonce = wrapped.ciphertext, wrapped.nonce
             count += 1
 
         new_wrapped = encryption_service.encrypt_kek(new_kek)
@@ -153,11 +178,15 @@ class NoteService:
         return count
 
     async def _all_notes_for_org(self, org_id: str) -> list[Note]:
-        from sqlalchemy import select
         result = await self.session.execute(select(Note).where(Note.organization_id == org_id, Note.deleted_at.is_(None)))
         return list(result.scalars().all())
 
     async def _all_folders_for_org(self, org_id: str) -> list[Folder]:
-        from sqlalchemy import select
         result = await self.session.execute(select(Folder).where(Folder.organization_id == org_id))
+        return list(result.scalars().all())
+
+    async def _all_files_for_org(self, org_id: str) -> list[FileAsset]:
+        result = await self.session.execute(
+            select(FileAsset).where(FileAsset.organization_id == org_id, FileAsset.deleted_at.is_(None))
+        )
         return list(result.scalars().all())

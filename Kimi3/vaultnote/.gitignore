@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Runtime artifacts - never commit generated state
+vaultnote.db
+storage/files/
+*.db
+
+# Local secrets / demo credentials
+.env
+scripts/.demo_credentials

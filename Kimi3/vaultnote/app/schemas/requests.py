@@ -5,14 +5,12 @@ OWASP: all external input is validated before touching business logic.
 """
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Literal, Optional
-
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-
 # Pure-Python email validation (avoids external email-validator dependency).
 # RFC 5322 simplified - sufficient for input validation.
 import re as _re
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 _EMAIL_RE = _re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
 
@@ -57,7 +55,7 @@ class RegisterRequest(_EmailBase):
 class LoginRequest(_EmailBase):
     email: str
     password: str = Field(min_length=1, max_length=128)
-    totp_code: Optional[str] = Field(default=None, min_length=6, max_length=6)
+    totp_code: str | None = Field(default=None, min_length=6, max_length=6)
 
 
 class RefreshRequest(BaseModel):
@@ -108,18 +106,18 @@ class WorkspaceCreate(BaseModel):
 
 class FolderCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    parent_id: Optional[str] = None
+    parent_id: str | None = None
 
 
 class NoteCreate(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     content: str = Field(default="")
-    folder_id: Optional[str] = None
+    folder_id: str | None = None
 
 
 class NoteUpdate(BaseModel):
-    title: Optional[str] = Field(default=None, max_length=500)
-    content: Optional[str] = None
+    title: str | None = Field(default=None, max_length=500)
+    content: str | None = None
 
 
 class ShareGrantCreate(BaseModel):
@@ -128,9 +126,9 @@ class ShareGrantCreate(BaseModel):
 
 
 class ShareLinkCreate(BaseModel):
-    password: Optional[str] = Field(default=None, min_length=4, max_length=64)
+    password: str | None = Field(default=None, min_length=4, max_length=64)
     permission: Literal["read", "write"] = "read"
-    expires_in_hours: Optional[int] = Field(default=None, ge=1, le=720)
+    expires_in_hours: int | None = Field(default=None, ge=1, le=720)
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +151,7 @@ class PresenceUpdate(BaseModel):
 
 class PlanChange(BaseModel):
     plan: Literal["free", "pro", "business", "enterprise"]
-    payment_token: Optional[str] = None  # PCI-DSS: tokenized payment only
+    payment_token: str | None = None  # PCI-DSS: tokenized payment only
 
 
 # ---------------------------------------------------------------------------

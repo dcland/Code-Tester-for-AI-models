@@ -8,10 +8,17 @@ from __future__ import annotations
 
 import enum
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import (
-    Boolean, DateTime, Enum, ForeignKey, Index, Integer, LargeBinary, String, Text,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -23,7 +30,7 @@ def _uuid() -> str:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class Role(str, enum.Enum):
@@ -59,8 +66,8 @@ class Organization(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    members: Mapped[list["Membership"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
-    workspaces: Mapped[list["Workspace"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
+    members: Mapped[list[Membership]] = relationship(back_populates="organization", cascade="all, delete-orphan")
+    workspaces: Mapped[list[Workspace]] = relationship(back_populates="organization", cascade="all, delete-orphan")
 
 
 class User(Base):
@@ -76,8 +83,8 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    memberships: Mapped[list["Membership"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    refresh_tokens: Mapped[list["RefreshToken"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    memberships: Mapped[list[Membership]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    refresh_tokens: Mapped[list[RefreshToken]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class Membership(Base):
@@ -110,6 +117,46 @@ class RefreshToken(Base):
     user: Mapped[User] = relationship(back_populates="refresh_tokens")
 
 
+class PasswordReset(Base):
+    """Password-reset tokens stored as SHA-256 hashes with expiry.
+
+    The raw token is only ever sent out-of-band (email); the API response
+    never contains it, so account existence is not leaked.
+    """
+    __tablename__ = "password_resets"
+    __table_args__ = (Index("ix_reset_user", "user_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class AuditEventRecord(Base):
+    """Durable, HMAC-signed, hash-chained audit event (SOC 2 CC7.2).
+
+    Persisted in the database so the trail survives restarts. Each row is
+    MACed with a server-side key over its canonical payload plus the hash of
+    the previous row, making tampering, reordering, or deletion detectable.
+    """
+    __tablename__ = "audit_events"
+    __table_args__ = (Index("ix_audit_tenant", "tenant_id"),)
+
+    seq: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False, default=_uuid)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    action: Mapped[str] = mapped_column(String(100), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(100), nullable=False)  # pseudonymous
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    prev_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class Workspace(Base):
     __tablename__ = "workspaces"
 
@@ -119,8 +166,8 @@ class Workspace(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     organization: Mapped[Organization] = relationship(back_populates="workspaces")
-    folders: Mapped[list["Folder"]] = relationship(back_populates="workspace", cascade="all, delete-orphan")
-    notes: Mapped[list["Note"]] = relationship(back_populates="workspace", cascade="all, delete-orphan")
+    folders: Mapped[list[Folder]] = relationship(back_populates="workspace", cascade="all, delete-orphan")
+    notes: Mapped[list[Note]] = relationship(back_populates="workspace", cascade="all, delete-orphan")
 
 
 class Folder(Base):
@@ -138,8 +185,8 @@ class Folder(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     workspace: Mapped[Workspace] = relationship(back_populates="folders")
-    children: Mapped[list["Folder"]] = relationship(back_populates="parent", cascade="all, delete-orphan")
-    parent: Mapped["Folder | None"] = relationship(back_populates="children", remote_side=[id])
+    children: Mapped[list[Folder]] = relationship(back_populates="parent", cascade="all, delete-orphan")
+    parent: Mapped[Folder | None] = relationship(back_populates="children", remote_side=[id])
 
 
 class Note(Base):

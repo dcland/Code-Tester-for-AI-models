@@ -6,14 +6,14 @@ No individual user behavior can be reconstructed.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.privacy import dp_count, dp_sum, pseudonymize
-from app.models.entities import Membership, Note, FileAsset, UsageRecord
+from app.core.privacy import dp_count, dp_sum
+from app.models.entities import FileAsset, Membership, Note
 
 
 class AnalyticsService:
@@ -25,7 +25,7 @@ class AnalyticsService:
 
         Only org-level aggregates are returned; all counts have Laplace noise.
         """
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
 
         # Raw aggregates (never returned to client directly)
         member_count = (await self.session.execute(

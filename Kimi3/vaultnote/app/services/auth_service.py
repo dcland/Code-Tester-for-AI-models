@@ -4,21 +4,41 @@ Authentication service - registration, login, token lifecycle, 2FA.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.encryption import encryption_service
 from app.core.security import (
-    create_access_token, generate_refresh_token, generate_secure_token,
-    generate_totp_secret, hash_password, hash_token, verify_password, verify_totp,
+    create_access_token,
+    generate_refresh_token,
+    generate_secure_token,
+    generate_totp_secret,
+    hash_password,
+    hash_token,
+    verify_password,
+    verify_totp,
 )
-from app.models.entities import Membership, Organization, PlanTier, RefreshToken, Role, Subscription, User
+from app.models.entities import (
+    Membership,
+    Organization,
+    PasswordReset,
+    PlanTier,
+    RefreshToken,
+    Role,
+    Subscription,
+    User,
+)
 from app.repositories.repositories import (
-    MembershipRepository, OrganizationRepository, RefreshTokenRepository, UserRepository,
+    MembershipRepository,
+    OrganizationRepository,
+    PasswordResetRepository,
+    RefreshTokenRepository,
+    UserRepository,
 )
 from app.utils.exceptions import AuthenticationError, ConflictError, ValidationError
+from app.utils.mailer import Mailer
 
 
 def _slugify(name: str) -> str:
@@ -33,6 +53,7 @@ class AuthService:
         self.orgs = OrganizationRepository(session)
         self.memberships = MembershipRepository(session)
         self.refresh_tokens = RefreshTokenRepository(session)
+        self.resets = PasswordResetRepository(session)
 
     async def register(self, email: str, password: str, full_name: str, org_name: str) -> tuple[User, Organization]:
         email = email.lower()
@@ -88,7 +109,7 @@ class AuthService:
         rt = RefreshToken(
             user_id=user.id,
             token_hash=hash_token(refresh),
-            expires_at=datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+            expires_at=datetime.now(UTC) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
         )
         await self.refresh_tokens.create(rt)
         return access, refresh, user
@@ -97,9 +118,9 @@ class AuthService:
         """Rotate refresh token (OWASP: refresh token rotation)."""
         token_hash = hash_token(refresh_token)
         rt = await self.refresh_tokens.get_by_hash(token_hash)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         # SQLite returns naive datetimes - normalize for comparison
-        expires_at = rt.expires_at.replace(tzinfo=timezone.utc) if rt and rt.expires_at.tzinfo is None else (rt.expires_at if rt else None)
+        expires_at = rt.expires_at.replace(tzinfo=UTC) if rt and rt.expires_at.tzinfo is None else (rt.expires_at if rt else None)
         if rt is None or rt.revoked or (expires_at is not None and expires_at < now):
             raise AuthenticationError("Invalid refresh token")
 
@@ -141,12 +162,44 @@ class AuthService:
         user.totp_enabled = True
         await self.session.flush()
 
-    async def request_password_reset(self, email: str) -> str | None:
-        """Return a reset token if the user exists (no enumeration in API layer)."""
+    async def request_password_reset(self, email: str) -> None:
+        """Issue a reset token for an existing account and send it by email.
+
+        Only the SHA-256 hash of the token is persisted. The raw token is
+        delivered out-of-band via the mailer and is never exposed through
+        the API, so responses are identical for existing and non-existing
+        accounts (no account enumeration, no token disclosure).
+        """
         user = await self.users.get_by_email(email.lower())
+        if user is None or not user.is_active or user.deleted_at is not None:
+            return
+        raw = generate_secure_token(32)
+        self.session.add(PasswordReset(
+            user_id=user.id,
+            token_hash=hash_token(raw),
+            expires_at=datetime.now(UTC)
+            + timedelta(seconds=settings.PASSWORD_RESET_TTL_SECONDS),
+        ))
+        await self.session.flush()
+        Mailer.send_password_reset(user.email, raw)
+
+    async def confirm_password_reset(self, token: str, new_password: str) -> None:
+        """Validate a reset token, set the new password, revoke all sessions.
+
+        Raises AuthenticationError for invalid/expired/used tokens so the
+        endpoint never reports success without actually changing a password.
+        """
+        row = await self.resets.get_valid(hash_token(token))
+        if row is None:
+            raise AuthenticationError("Reset token is invalid or expired")
+        user = await self.users.get_by_id(row.user_id)
         if user is None:
-            return None
-        return generate_secure_token(32)
+            raise AuthenticationError("Reset token is invalid or expired")
+        user.hashed_password = hash_password(new_password)
+        await self.resets.mark_used(row)
+        # Security: any existing sessions must not survive a password reset.
+        await self.refresh_tokens.revoke_all_for_user(user.id)
+        await self.session.flush()
 
     async def reset_password(self, user: User, new_password: str) -> None:
         user.hashed_password = hash_password(new_password)

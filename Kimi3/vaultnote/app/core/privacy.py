@@ -7,6 +7,7 @@ Art. 32 (pseudonymization as a security measure).
 from __future__ import annotations
 
 import hashlib
+import hmac
 import math
 import re
 import secrets
@@ -51,13 +52,15 @@ def redact_dict(data: dict[str, Any], sensitive_keys: set[str] | None = None) ->
 
 
 def pseudonymize(identifier: str, salt: str | None = None) -> str:
-    """Irreversible pseudonym of an identifier for analytics.
+    """Keyed, irreversible pseudonym of an identifier for analytics.
 
     GDPR Art. 4(5) pseudonymization - allows analytics without
-    re-identifying individuals.
+    re-identifying individuals. Uses HMAC-SHA256 with a dedicated salt
+    (separate from the JWT secret) so pseudonyms cannot be precomputed
+    from a dictionary of candidate identifiers without the key.
     """
-    salt = salt or settings.JWT_SECRET_KEY[:16]
-    return hashlib.sha256(f"{salt}:{identifier}".encode()).hexdigest()[:24]
+    key = (salt or settings.PSEUDONYM_SALT or "").encode()
+    return hmac.new(key, identifier.encode(), hashlib.sha256).hexdigest()[:24]
 
 
 # ---------------------------------------------------------------------------

@@ -5,8 +5,9 @@ Run with: uvicorn app.main:app --reload
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,19 +16,49 @@ from fastapi.responses import JSONResponse
 from app.api.v1 import admin, analytics, auth, billing, files, notes, workspaces
 from app.core.config import settings
 from app.core.privacy import redact_pii
-from app.middleware.security import RateLimitMiddleware, RequestIDMiddleware, SecurityHeadersMiddleware
-from app.models.database import init_db
+from app.middleware.security import (
+    RateLimitMiddleware,
+    RequestIDMiddleware,
+    SecurityHeadersMiddleware,
+)
+from app.models.database import async_session_factory, init_db
 from app.utils.exceptions import VaultNoteError
 
 logger = logging.getLogger("vaultnote")
 logging.basicConfig(level=logging.INFO)
 
 
+async def _retention_enforcement_loop() -> None:
+    """Automatic GDPR Art. 5(1)(e) storage-limitation enforcement.
+
+    Runs as a scheduled background job (not a manual endpoint) and applies
+    each tenant's own plan retention window.
+    """
+    from app.services.compliance_service import ComplianceService
+
+    while True:
+        await asyncio.sleep(settings.RETENTION_PURGE_INTERVAL_SECONDS)
+        try:
+            async with async_session_factory() as session:
+                totals = await ComplianceService(session).purge_all_tenants()
+                await session.commit()
+            logger.info("retention purge completed: %s", totals)
+        except Exception:  # pragma: no cover - defensive: job must not die
+            logger.exception("retention purge failed; will retry next cycle")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Create tables on startup (use Alembic migrations in production)
     await init_db()
-    yield
+    # Automatic retention enforcement (scheduled system job)
+    purge_task = asyncio.create_task(_retention_enforcement_loop())
+    try:
+        yield
+    finally:
+        purge_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await purge_task
 
 
 app = FastAPI(
@@ -48,7 +79,7 @@ app.add_middleware(
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
-    allow_headers=["Authorization", "Content-Type", "X-Organization-ID"],
+    allow_headers=["Authorization", "Content-Type", "X-Organization-ID", "X-File-Name"],
 )
 
 

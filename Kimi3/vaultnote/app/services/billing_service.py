@@ -5,12 +5,16 @@ PCI-DSS: only payment tokens are stored, never raw card data.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.entities import Invoice, PlanTier, Subscription
-from app.repositories.repositories import InvoiceRepository, SubscriptionRepository, UsageRepository
+from app.repositories.repositories import (
+    InvoiceRepository,
+    SubscriptionRepository,
+    UsageRepository,
+)
 from app.utils.exceptions import NotFoundError
 
 # Price per seat per month in cents
@@ -42,11 +46,11 @@ class BillingService:
         new_price = _PLAN_PRICES[new_plan]
 
         # Proration: compute unused portion of current plan vs new plan
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         # SQLite returns naive datetimes - normalize for arithmetic
         period_start = sub.current_period_start
         if period_start.tzinfo is None:
-            period_start = period_start.replace(tzinfo=timezone.utc)
+            period_start = period_start.replace(tzinfo=UTC)
         days_in_period = 30
         elapsed = max((now - period_start).days, 0)
         remaining_ratio = max(days_in_period - elapsed, 0) / days_in_period
@@ -73,7 +77,7 @@ class BillingService:
         }
 
     async def record_usage(self, org_id: str, storage_bytes: int = 0, seats: int = 0, api_calls: int = 0) -> None:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
         rec = await self.usage.get_or_create_today(org_id, today)
         rec.storage_bytes += storage_bytes
         rec.seats = max(rec.seats, seats)

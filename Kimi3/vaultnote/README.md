@@ -11,10 +11,14 @@ GDPR · CCPA · SOC 2 ready. Built with FastAPI, SQLAlchemy 2.0 (async), AES-256
 # 1. Install dependencies (Python 3.12+)
 pip install -r requirements.txt
 
-# 2. (Optional) configure secrets - defaults are randomly generated per process
+# 2. (Optional in dev, REQUIRED in production) configure secrets.
+#     With VAULTNOTE_ENVIRONMENT=production the server refuses to boot
+#     unless every secret below is explicitly set (fail-closed).
 export VAULTNOTE_JWT_SECRET_KEY="$(openssl rand -base64 48)"
 export VAULTNOTE_PASSWORD_PEPPER="$(openssl rand -base64 32)"
 export VAULTNOTE_MASTER_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+export VAULTNOTE_PSEUDONYM_SALT="$(openssl rand -base64 32)"
+export VAULTNOTE_AUDIT_HMAC_KEY="$(openssl rand -base64 32)"
 
 # 3. Seed demo data (two orgs, users, notes, a file)
 python -m scripts.seed_demo
@@ -61,12 +65,16 @@ Clean layered architecture: **API → Service → Repository → Model**. Depend
 | 2FA | TOTP (RFC 6238), pure-Python, constant-time verify |
 | Encryption | **AES-256-GCM** envelope: DEK per item → tenant KEK → master key |
 | Key rotation | Re-wraps DEKs without touching plaintext |
+| Resource authorization | Centralized `AccessService`: role ceilings (viewer=read), ownership, share grants, workspace↔tenant binding on every route |
+| Sharing | Requires admin on the resource; grantee must be a member of the **same** organization (cross-tenant grants rejected) |
+| Password reset | Hashed, expiring, single-use tokens; delivered by email only; sessions revoked on confirm |
 | Rate limiting | Sliding window, per-IP/per-user, O(1); Redis or pure-Python |
 | Headers | CSP, HSTS, X-Frame-Options, nosniff, etc. |
 | SQL injection | SQLAlchemy parameterized queries only |
 | Path traversal | Filename sanitization + random storage names + path confinement |
 | Timing attacks | Constant-time compare, dummy verify for unknown users |
-| File validation | Magic-byte sniffing, size limits, virus-scan interface |
+| File validation | Magic-byte sniffing + declared-MIME cross-check, size limits, pluggable virus-scan interface |
+| Secrets | Fail-closed in production; ephemeral random defaults in dev only |
 
 All secrets are loaded **only** from environment variables.
 
@@ -76,7 +84,7 @@ All secrets are loaded **only** from environment variables.
 
 * **Data minimization** - only essential fields are collected.
 * **PII redaction** - emails/IPs/phones are scrubbed from logs and errors.
-* **Pseudonymization** - user IDs are hashed before entering analytics/audit.
+* **Pseudonymization** - user IDs are HMAC-SHA256 pseudonymized (dedicated salt) before entering analytics/audit.
 * **Differential privacy** - all dashboard aggregates include Laplace noise (configurable ε).
 * **No PII in audit logs** - only pseudonymous IDs and actions.
 
@@ -87,11 +95,11 @@ All secrets are loaded **only** from environment variables.
 | Regulation | Feature |
 |---|---|
 | GDPR Art. 15 / CCPA | Data export (JSON + ZIP) |
-| GDPR Art. 17 | Cascading user & org erasure |
+| GDPR Art. 17 | Cascading user & org erasure - **including physical file blobs** |
 | GDPR Art. 7 | Consent management |
-| GDPR Art. 5(1)(e) | Configurable retention + purge jobs |
+| GDPR Art. 5(1)(e) | Plan-aware retention + automatic scheduled purge (tenant-scoped endpoint for manual runs) |
 | GDPR Art. 25 | Privacy by design/default |
-| GDPR Art. 30 / SOC 2 | Immutable, hash-chained audit log (tamper-evident) |
+| GDPR Art. 30 / SOC 2 | **Durable** (DB-persisted), HMAC-signed, hash-chained audit log (tamper-evident) |
 | GDPR Art. 32 | Encryption at rest, key rotation |
 | GDPR Art. 89 | Differential privacy for statistics |
 | PCI-DSS | Only payment **tokens** stored, never card data |
@@ -123,7 +131,30 @@ Every tenant-scoped row carries `organization_id`. The `X-Organization-ID` heade
 | Folders | `GET/POST /api/v1/workspaces/{id}/folders` |
 | Sharing | `POST .../notes/{id}/share`, `/share-link` |
 | Collab | `POST/GET .../notes/{id}/operations`, `/presence` |
-| Files | `POST/GET /api/v1/workspaces/{id}/files`, `/download-token`, `/download` |
+| Files | `POST/GET/DELETE /api/v1/workspaces/{id}/files`, `/download-token`, `/download` |
 | Billing | `GET /api/v1/billing/subscription`, `POST /plan`, `GET /invoices` |
 | Analytics | `GET /api/v1/analytics/dashboard` |
-| Admin | `/api/v1/admin/export`, `/users/me`, `/organization`, `/consent`, `/retention/purge`, `/keys/rotate`, `/audit` |
+| Admin | `/api/v1/admin/export`, `/users/me`, `/organization`, `/consent`, `/retention/purge`, `/keys/rotate`, `/audit`, `/audit/verify` |
+
+### File upload protocol
+
+Uploads use a **raw binary request body** (no multipart form parsing, so no
+`python-multipart` dependency):
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/workspaces/{ws_id}/files" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Organization-ID: $ORG" \
+  -H "X-File-Name: logo.png" -H "Content-Type: image/png" \
+  --data-binary @logo.png
+```
+
+The declared `Content-Type` is cross-checked against the detected magic
+bytes; mismatches are rejected with `422`.
+
+### Authorization model
+
+Effective permission = max(tenant role, resource ownership, share grant on
+the note or its folder), capped by the role ceiling (a `viewer` never
+exceeds read). Notes are private by default: creators and org
+owners/admins have full control; members and viewers only see notes shared
+with them. Share grants may only target members of the same organization.

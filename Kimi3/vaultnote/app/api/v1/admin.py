@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import CurrentUser, TenantContext, get_current_user, get_tenant_context, require_role
+from app.api.dependencies import TenantContext, get_tenant_context, require_role
 from app.core.compliance import AuditLog
 from app.core.privacy import pseudonymize
 from app.models.database import get_db
@@ -23,7 +23,7 @@ async def erase_my_account(
     ctx: TenantContext = Depends(get_tenant_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """GDPR Art. 17 / CCPA - user self-erasure."""
+    """GDPR Art. 17 / CCPA - user self-erasure (including stored file blobs)."""
     svc = ComplianceService(db)
     return await svc.erase_user(ctx.user.id, ctx.organization_id)
 
@@ -33,7 +33,7 @@ async def erase_organization(
     ctx: TenantContext = Depends(require_role(Role.OWNER)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """GDPR Art. 17 - cascading deletion of entire tenant."""
+    """GDPR Art. 17 - cascading deletion of entire tenant (rows + blobs)."""
     svc = ComplianceService(db)
     return await svc.erase_organization(ctx.organization_id)
 
@@ -83,16 +83,18 @@ async def list_consents(
     return await svc.list_consents(ctx.user.id)
 
 
-# ---- Retention purge (scheduled job trigger) --------------------------------
+# ---- Retention purge ---------------------------------------------------------
 
 @router.post("/retention/purge", status_code=200)
 async def purge_expired(
     ctx: TenantContext = Depends(require_role(Role.OWNER, Role.ADMIN)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """GDPR Art. 5(1)(e) - storage limitation purge job."""
+    """GDPR Art. 5(1)(e) - tenant-scoped purge with the caller's own plan
+    window. Cross-tenant enforcement runs automatically as a scheduled
+    system job (see app lifespan), never via a tenant admin."""
     svc = ComplianceService(db)
-    return await svc.purge_expired_data()
+    return await svc.purge_expired_data(ctx.organization_id)
 
 
 # ---- Key rotation -----------------------------------------------------------
@@ -102,20 +104,30 @@ async def rotate_keys(
     ctx: TenantContext = Depends(require_role(Role.OWNER, Role.ADMIN)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """GDPR Art. 32 - cryptographic key rotation."""
+    """GDPR Art. 32 - cryptographic key rotation (notes, folders, files)."""
     svc = NoteService(db)
     count = await svc.rotate_tenant_key(ctx.organization_id)
-    AuditLog.record("key_rotated", actor_id=pseudonymize(ctx.user.id),
-                    tenant_id=ctx.organization_id, resource_type="organization",
-                    resource_id=ctx.organization_id, metadata={"rewrapped": count})
+    await AuditLog.record(db, "key_rotated", actor_id=pseudonymize(ctx.user.id),
+                          tenant_id=ctx.organization_id, resource_type="organization",
+                          resource_id=ctx.organization_id, metadata={"rewrapped": count})
     return {"rewrapped_items": count}
 
 
-# ---- Audit log (tamper-evident) --------------------------------------------
+# ---- Audit log (durable, HMAC-signed, tamper-evident) -----------------------
 
 @router.get("/audit")
 async def get_audit_log(
     ctx: TenantContext = Depends(require_role(Role.OWNER, Role.ADMIN)),
+    db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
-    """SOC 2 CC7.2 - immutable audit trail (no PII)."""
-    return AuditLog.events_for_tenant(ctx.organization_id)
+    """SOC 2 CC7.2 - durable signed audit trail (no PII)."""
+    return await AuditLog.events_for_tenant(db, ctx.organization_id)
+
+
+@router.get("/audit/verify")
+async def verify_audit_chain(
+    ctx: TenantContext = Depends(require_role(Role.OWNER, Role.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Verify the integrity of the audit chain (tamper check)."""
+    return {"valid": await AuditLog.verify_chain(db)}

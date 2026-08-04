@@ -1,5 +1,6 @@
 """
-Shared FastAPI dependencies: auth, tenant resolution, role checks.
+Shared FastAPI dependencies: auth, tenant resolution, role checks,
+workspace binding.
 """
 from __future__ import annotations
 
@@ -10,9 +11,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decode_token
 from app.models.database import get_db
-from app.models.entities import Role
-from app.repositories.repositories import MembershipRepository, UserRepository
-from app.utils.exceptions import AuthenticationError, AuthorizationError, TenantIsolationError
+from app.models.entities import Role, Workspace
+from app.repositories.repositories import (
+    MembershipRepository,
+    UserRepository,
+    WorkspaceRepository,
+)
+from app.utils.exceptions import (
+    AuthenticationError,
+    AuthorizationError,
+    NotFoundError,
+    TenantIsolationError,
+)
 
 
 @dataclass
@@ -26,6 +36,15 @@ class TenantContext:
     user: CurrentUser
     organization_id: str
     role: Role
+
+
+@dataclass
+class WorkspaceContext:
+    """Tenant context plus a workspace that is verified to belong to it."""
+    user: CurrentUser
+    organization_id: str
+    role: Role
+    workspace: Workspace
 
 
 async def get_current_user(
@@ -62,6 +81,26 @@ async def get_tenant_context(
     if membership is None:
         raise TenantIsolationError()
     return TenantContext(user=user, organization_id=x_organization_id, role=membership.role)
+
+
+async def get_workspace_context(
+    workspace_id: str,
+    ctx: TenantContext = Depends(get_tenant_context),
+    db: AsyncSession = Depends(get_db),
+) -> WorkspaceContext:
+    """Bind the ``{workspace_id}`` path parameter to the active tenant.
+
+    A workspace ID from another organization is indistinguishable from a
+    non-existent one (404), so tenants cannot probe or touch foreign
+    workspaces by guessing IDs.
+    """
+    workspace = await WorkspaceRepository(db).get_by_id(workspace_id)
+    if workspace is None or workspace.organization_id != ctx.organization_id:
+        raise NotFoundError("Workspace not found")
+    return WorkspaceContext(
+        user=ctx.user, organization_id=ctx.organization_id,
+        role=ctx.role, workspace=workspace,
+    )
 
 
 def require_role(*allowed: Role):

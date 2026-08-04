@@ -12,7 +12,7 @@ import hmac
 import secrets
 import struct
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -45,12 +45,16 @@ def hash_password(password: str) -> str:
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Constant-time password verification.
 
-    Returns False on any error (never raises) to avoid oracle leaks.
+    Returns False on ANY error (never raises) so callers cannot distinguish
+    "malformed stored hash" from "wrong password" - no oracle leaks. The
+    broad catch is intentional here.
     """
     try:
-        peppered = plain_password + settings.PASSWORD_PEPPER
+        peppered = plain_password + (settings.PASSWORD_PEPPER or "")
         return _ph.verify(hashed_password, peppered)
-    except (VerifyMismatchError, VerificationError, InvalidHash, Exception):
+    except (VerifyMismatchError, VerificationError, InvalidHash):
+        return False
+    except Exception:  # noqa: BLE001 - deliberate: never leak hash-oracle details
         return False
 
 
@@ -73,7 +77,7 @@ def hash_token(token: str) -> str:
 
 def create_access_token(subject: str | UUID, extra_claims: dict[str, Any] | None = None) -> str:
     """Create a short-lived JWT access token."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expire = now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     payload: dict[str, Any] = {
         "sub": str(subject),

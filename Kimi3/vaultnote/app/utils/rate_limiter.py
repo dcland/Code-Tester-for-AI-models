@@ -7,11 +7,14 @@ implementation with the same semantics. Thread/async safe via asyncio lock.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections import defaultdict, deque
 from typing import Protocol
 
 from app.core.config import settings
+
+logger = logging.getLogger("vaultnote.ratelimit")
 
 
 class RateLimiterBackend(Protocol):
@@ -66,8 +69,8 @@ def build_rate_limiter() -> RateLimiterBackend:
     if settings.REDIS_URL:
         try:
             return RedisRateLimiter(settings.REDIS_URL)
-        except Exception:
-            pass
+        except (ImportError, ValueError, TypeError) as exc:
+            logger.warning("Redis rate limiter unavailable (%s); using in-memory fallback", exc)
     return InMemoryRateLimiter()
 
 

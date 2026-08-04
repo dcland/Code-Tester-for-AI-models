@@ -5,15 +5,18 @@ import time
 
 import pytest
 
-from app.core.encryption import EncryptionService, WrappedKey
+from app.core.encryption import EncryptionService
 from app.core.privacy import dp_count, pseudonymize, redact_pii
 from app.core.security import (
-    constant_time_compare, generate_totp_secret, hash_password, hash_token,
-    verify_password, verify_totp, _hotp,
+    _hotp,
+    constant_time_compare,
+    generate_totp_secret,
+    hash_password,
+    verify_password,
+    verify_totp,
 )
 from app.utils.cache import TTLRUCache
 from app.utils.rate_limiter import InMemoryRateLimiter
-
 
 # ---- Password hashing -------------------------------------------------------
 
@@ -72,14 +75,16 @@ def test_encrypt_decrypt_roundtrip():
 
 
 def test_decrypt_with_wrong_key_fails():
+    from cryptography.exceptions import InvalidTag
     svc = EncryptionService()
     k1, k2 = svc.generate_dek(), svc.generate_dek()
     ct, nonce = svc.encrypt(b"secret", k1)
-    with pytest.raises(Exception):
+    with pytest.raises(InvalidTag):
         svc.decrypt(ct, nonce, k2)
 
 
 def test_tampered_ciphertext_fails():
+    from cryptography.exceptions import InvalidTag
     svc = EncryptionService()
     key = svc.generate_dek()
     ct, nonce = svc.encrypt(b"data", key)
@@ -87,7 +92,7 @@ def test_tampered_ciphertext_fails():
     raw = bytearray(base64.urlsafe_b64decode(ct))
     raw[0] ^= 0xFF  # flip a bit
     tampered = base64.urlsafe_b64encode(bytes(raw)).decode()
-    with pytest.raises(Exception):
+    with pytest.raises(InvalidTag):
         svc.decrypt(tampered, nonce, key)
 
 
@@ -106,7 +111,8 @@ def test_key_rotation_rewraps_dek():
     wrapped_old = svc.wrap_dek(dek, old_kek)
     wrapped_new = svc.rotate_dek(wrapped_old, old_kek, new_kek)
     assert svc.unwrap_dek(wrapped_new, new_kek) == dek
-    with pytest.raises(Exception):
+    from cryptography.exceptions import InvalidTag
+    with pytest.raises(InvalidTag):
         svc.unwrap_dek(wrapped_new, old_kek)
 
 
@@ -183,6 +189,42 @@ async def test_rate_limiter_o1_lookup():
     assert elapsed < 5  # very generous bound
 
 
+# ---- Configuration: fail-closed secrets ----------------------------------------
+
+def test_production_requires_explicit_secrets(monkeypatch):
+    """Fail-closed: production must refuse to boot without managed secrets."""
+    from app.core.config import Settings
+    for var in ("VAULTNOTE_JWT_SECRET_KEY", "VAULTNOTE_PASSWORD_PEPPER",
+                "VAULTNOTE_MASTER_ENCRYPTION_KEY", "VAULTNOTE_PSEUDONYM_SALT",
+                "VAULTNOTE_AUDIT_HMAC_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("VAULTNOTE_ENVIRONMENT", "production")
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_development_generates_ephemeral_secrets(monkeypatch):
+    """Dev convenience: random per-process secrets with warnings (never in prod)."""
+    from app.core.config import Settings
+    for var in ("VAULTNOTE_JWT_SECRET_KEY", "VAULTNOTE_PASSWORD_PEPPER",
+                "VAULTNOTE_MASTER_ENCRYPTION_KEY", "VAULTNOTE_PSEUDONYM_SALT",
+                "VAULTNOTE_AUDIT_HMAC_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("VAULTNOTE_ENVIRONMENT", "development")
+    s = Settings(_env_file=None)
+    assert s.JWT_SECRET_KEY and len(s.JWT_SECRET_KEY) > 32
+    assert s.PSEUDONYM_SALT and s.AUDIT_HMAC_KEY
+
+
+def test_pseudonymize_uses_keyed_hmac():
+    """Pseudonyms must differ under different salts (keyed, not plain SHA-256)."""
+    assert pseudonymize("user-1", salt="aaa") != pseudonymize("user-1", salt="bbb")
+    # ... and never equal an unkeyed hash of the identifier
+    import hashlib
+    assert pseudonymize("user-1") != hashlib.sha256(b"user-1").hexdigest()[:24]
+
+
 # ---- LRU cache ----------------------------------------------------------------
 
 def test_lru_cache_get_put():
@@ -203,3 +245,29 @@ def test_lru_cache_ttl_expiry():
     c.put("k", "v")
     time.sleep(1.1)
     assert c.get("k") is None
+
+
+def test_lru_cache_thread_safety():
+    """Concurrent put/get/invalidate from many threads must not corrupt state."""
+    import threading
+    c = TTLRUCache(maxsize=64, ttl_seconds=60)
+    errors: list[Exception] = []
+
+    def worker(n: int) -> None:
+        try:
+            for i in range(200):
+                key = f"k{i % 80}"
+                c.put(key, n)
+                c.get(key)
+                if i % 7 == 0:
+                    c.invalidate(key)
+        except Exception as e:  # noqa: BLE001 - collect ANY thread failure for assertion
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker, args=(t,)) for t in range(16)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    assert c.size <= 64

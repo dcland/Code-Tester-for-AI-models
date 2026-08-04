@@ -3,15 +3,30 @@ Concrete repositories for each entity.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.entities import (
-    ConsentRecord, DownloadToken, FileAsset, Folder, Invoice, Membership,
-    Note, NoteOperation, Organization, PresenceState, RefreshToken, ShareGrant,
-    ShareLink, Subscription, UsageRecord, User, Workspace,
+    AuditEventRecord,
+    ConsentRecord,
+    DownloadToken,
+    FileAsset,
+    Folder,
+    Invoice,
+    Membership,
+    Note,
+    NoteOperation,
+    Organization,
+    PasswordReset,
+    PresenceState,
+    RefreshToken,
+    ShareGrant,
+    ShareLink,
+    Subscription,
+    UsageRecord,
+    User,
+    Workspace,
 )
 from app.repositories.base import BaseRepository
 
@@ -70,6 +85,37 @@ class RefreshTokenRepository(BaseRepository[RefreshToken]):
         await self.session.flush()
 
 
+class PasswordResetRepository(BaseRepository[PasswordReset]):
+    model = PasswordReset
+
+    async def get_valid(self, token_hash: str) -> PasswordReset | None:
+        """Fetch an unused, unexpired reset token by its hash."""
+        now = datetime.now(UTC)
+        result = await self.session.execute(
+            select(PasswordReset).where(
+                PasswordReset.token_hash == token_hash,
+                PasswordReset.used.is_(False),
+            )
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            return None
+        expires = row.expires_at
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=UTC)
+        if expires < now:
+            return None
+        return row
+
+    async def mark_used(self, row: PasswordReset) -> None:
+        row.used = True
+        await self.session.flush()
+
+
+class AuditRepository(BaseRepository[AuditEventRecord]):
+    model = AuditEventRecord
+
+
 class WorkspaceRepository(BaseRepository[Workspace]):
     model = Workspace
 
@@ -97,7 +143,7 @@ class NoteRepository(BaseRepository[Note]):
         return list(result.scalars().all())
 
     async def soft_delete(self, note: Note) -> None:
-        note.deleted_at = datetime.now(timezone.utc)
+        note.deleted_at = datetime.now(UTC)
         await self.session.flush()
 
 

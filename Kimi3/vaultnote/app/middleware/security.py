@@ -3,7 +3,6 @@ Security headers middleware (OWASP) + request ID + rate limiting.
 """
 from __future__ import annotations
 
-import time
 import uuid
 
 from fastapi import Request
@@ -11,7 +10,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
 
 from app.core.config import settings
-from app.core.privacy import redact_pii
 from app.utils.rate_limiter import rate_limiter
 
 _AUTH_PATHS = ("/api/v1/auth/login", "/api/v1/auth/register", "/api/v1/auth/password-reset")

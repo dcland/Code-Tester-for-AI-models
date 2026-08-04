@@ -5,14 +5,17 @@ Uses a Lamport logical clock for total ordering of operations.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.encryption import WrappedKey, encryption_service
 from app.models.entities import NoteOperation, PresenceState
 from app.repositories.repositories import (
-    NoteOperationRepository, NoteRepository, OrganizationRepository, PresenceRepository,
+    NoteOperationRepository,
+    NoteRepository,
+    OrganizationRepository,
+    PresenceRepository,
 )
 from app.utils.exceptions import NotFoundError
 
@@ -66,8 +69,13 @@ class CollabService:
             })
         return out
 
-    async def update_presence(self, note_id: str, user_id: str, cursor_position: int) -> None:
+    async def update_presence(self, org_id: str, note_id: str, user_id: str, cursor_position: int) -> None:
+        """Upsert presence. The note is resolved tenant-scoped so presence
+        can never be attached to another tenant's note."""
         from sqlalchemy import select
+        note = await self.notes.get_by_id_and_org(note_id, org_id)
+        if note is None or note.deleted_at is not None:
+            raise NotFoundError("Note not found")
         result = await self.session.execute(
             select(PresenceState).where(PresenceState.note_id == note_id, PresenceState.user_id == user_id)
         )
@@ -77,9 +85,13 @@ class CollabService:
             self.session.add(state)
         else:
             state.cursor_position = cursor_position
-            state.last_seen = datetime.now(timezone.utc)
+            state.last_seen = datetime.now(UTC)
         await self.session.flush()
 
-    async def get_presence(self, note_id: str) -> list[dict]:
+    async def get_presence(self, org_id: str, note_id: str) -> list[dict]:
+        """List presence for a note, resolved tenant-scoped."""
+        note = await self.notes.get_by_id_and_org(note_id, org_id)
+        if note is None or note.deleted_at is not None:
+            raise NotFoundError("Note not found")
         states = await self.presence.list_for_note(note_id)
         return [{"user_id": s.user_id, "cursor_position": s.cursor_position, "last_seen": s.last_seen.isoformat()} for s in states]
